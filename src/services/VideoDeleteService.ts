@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import type { StorageProvider } from "../types/storage";
 import type { VideoRepository } from "../repositories/VideoRepository";
 import { ForbiddenError, NotFoundError } from "../utils/errors";
@@ -6,14 +7,20 @@ import { createLogger } from "../utils/logger";
 const logger = createLogger("VideoDeleteService");
 
 export class VideoDeleteService {
-  constructor(private readonly storage: StorageProvider, private readonly videos: VideoRepository) {}
+  constructor(
+    private readonly storage: StorageProvider,
+    private readonly videos: VideoRepository,
+    private readonly ownerTokenSecret?: string
+  ) {}
 
-  async delete(id: string, requesterUploader?: string): Promise<void> {
+  async delete(id: string, ownerToken?: string): Promise<void> {
     const record = await this.videos.getById(id);
     if (!record) throw new NotFoundError(`Video "${id}" not found`);
 
-    if (requesterUploader && record.uploader !== requesterUploader) {
-      throw new ForbiddenError("You can only delete your own videos");
+    const secret = this.ownerTokenSecret || "dev-only-insecure-secret-set-OWNER_TOKEN_SECRET";
+    const expected = crypto.createHmac("sha256", secret).update(id).digest("hex");
+    if (!ownerToken || ownerToken !== expected) {
+      throw new ForbiddenError("Invalid or missing ownerToken");
     }
 
     if (record.thumbnailKey && record.thumbnailKey !== record.storageKey) {

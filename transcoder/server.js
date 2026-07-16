@@ -113,6 +113,6 @@ app.post("/transcode", async (req, res) => {
   }
 });
 
-app.get("/health", (req, res) => res.json({ status: "ok", secret: SECRET.slice(0, 8) + "..." }));
+app.get("/health", (req, res) => res.json({ status: "ok" }));
 
 app.listen(PORT, () => console.log(`Transcoder running on port ${PORT}`));

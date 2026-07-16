@@ -41,9 +41,9 @@ export function buildContainer(env: Env & { DB?: D1Database; KV?: KVNamespace })
   const videos: VideoRepository = env.DB ? new D1VideoRepository(env.DB) : new InMemoryVideoRepository();
   const cache: CacheStore = new InMemoryCacheStore();
 
-  const uploadService = new VideoUploadService(storage, videos, env.TRANSCODER_URL, env.TRANSCODER_SECRET);
+  const uploadService = new VideoUploadService(storage, videos, env.TRANSCODER_URL, env.TRANSCODER_SECRET, env.OWNER_TOKEN_SECRET);
   const feedService = new VideoFeedService(storage, videos, cache);
-  const deleteService = new VideoDeleteService(storage, videos);
+  const deleteService = new VideoDeleteService(storage, videos, env.OWNER_TOKEN_SECRET);
 
   return {
     storage,

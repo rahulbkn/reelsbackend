@@ -442,7 +442,7 @@ function releaseWakeLock() {
   if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; }
 }
 
-const CHUNK_SIZE = 1024 * 1024;
+const CHUNK_SIZE = 3 * 1024 * 1024;
 
 $('uploadForm').onsubmit = async (e) => {
   e.preventDefault();
@@ -546,7 +546,7 @@ $('uploadForm').onsubmit = async (e) => {
     return false;
   }
 
-  const PARALLEL = 2;
+  const PARALLEL = 4;
   for (let start = 0; start < totalChunks; start += PARALLEL) {
     const end = Math.min(start + PARALLEL, totalChunks);
     const tasks = [];

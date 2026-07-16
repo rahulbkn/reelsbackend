@@ -27,8 +27,8 @@ export function buildRouter(container: AppContainer): Router {
   // --- Generic media stream — works for whichever provider is active -----
   router.get("/stream", container.streamController.handle);
 
-  // --- HLS playlist — byte-range manifest for large video files ----------
-  router.get("/hls", container.hlsController.handle);
+  // --- HLS playlist — disabled: byte-range slicing isn't keyframe-aligned, produces corrupt segments
+  // router.get("/hls", container.hlsController.handle);
 
   router.get("/health", (_req: Request, res: Response) => res.json({ success: true, provider: container.storage.name }));
 

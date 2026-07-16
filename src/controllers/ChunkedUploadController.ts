@@ -10,8 +10,17 @@ export class ChunkedUploadController {
     private readonly kv: KVNamespace | null
   ) {}
 
+  private async checkRateLimit(ip: string): Promise<void> {
+    if (!this.kv) return;
+    const key = `ratelimit:upload:${ip}`;
+    const count = Number(await this.kv.get(key)) || 0;
+    if (count >= 10) throw new BadRequestError("Upload limit reached, try again in an hour");
+    await this.kv.put(key, String(count + 1), { expirationTtl: 3600 });
+  }
+
   initUpload = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      await this.checkRateLimit(req.ip || "unknown");
       const { title, description, uploader, category, hashtags, fileName, fileSize, mimeType, totalChunks } = req.body;
       if (!title?.trim()) throw new BadRequestError("title is required");
       if (!uploader?.trim()) throw new BadRequestError("uploader is required");

@@ -12,9 +12,17 @@ const logger = createLogger("app");
 export function createApp(env: ConfigEnv & { DB?: D1Database; KV?: KVNamespace }): Express {
   const app = express();
 
-  app.use(express.text({ type: "text/plain", limit: "5mb" }));
+  app.use(express.text({ type: "text/plain", limit: "10mb" }));
   app.use(express.json({ limit: "10mb" }));
   app.use(express.static("public"));
+
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (_req.method === "OPTIONS") { res.status(204).end(); return; }
+    next();
+  });
 
   const container = buildContainer(env);
   app.use(buildRouter(container));

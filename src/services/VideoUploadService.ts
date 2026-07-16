@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import type { StorageProvider } from "../types/storage";
 import type { VideoRepository } from "../repositories/VideoRepository";
-import type { ClientVideoView, VideoMetadata } from "../types/video";
+import type { ClientVideoView, VideoMetadata, UploadVideoResult } from "../types/video";
 import { BadRequestError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
 import { decodeTelegramStorageKey } from "../providers/storage/telegram/TelegramStorageProvider";
@@ -20,7 +20,7 @@ export interface UploadVideoInput {
 }
 
 const VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime", "video/webm", "video/x-matroska"];
-const MAX_VIDEO_SIZE = 400 * 1024 * 1024;
+const MAX_VIDEO_SIZE = 350 * 1024 * 1024; // Self-hosted Bot API server supports up to 2GB
 const CACHE_NS = "reels-video-cache";
 
 /**
@@ -36,10 +36,11 @@ export class VideoUploadService {
     private readonly storage: StorageProvider,
     private readonly videos: VideoRepository,
     private readonly transcoderUrl?: string,
-    private readonly transcoderSecret?: string
+    private readonly transcoderSecret?: string,
+    private readonly ownerTokenSecret?: string
   ) {}
 
-  async upload(input: UploadVideoInput, waitUntil?: (p: Promise<unknown>) => void): Promise<ClientVideoView> {
+  async upload(input: UploadVideoInput, waitUntil?: (p: Promise<unknown>) => void): Promise<UploadVideoResult> {
     if (!input.video?.buffer?.length) throw new BadRequestError("No video file provided");
     if (!VIDEO_MIME_TYPES.includes(input.video.mimeType)) {
       throw new BadRequestError(`Expected a video file, got '${input.video.mimeType || "unknown"}'`);
@@ -105,7 +106,13 @@ export class VideoUploadService {
       shares: 0,
       videoUrl,
       thumbnailUrl: videoUrl,
+      ownerToken: this.signOwnerToken(record.id),
     };
+  }
+
+  private signOwnerToken(videoId: string): string {
+    const secret = this.ownerTokenSecret || "dev-only-insecure-secret-set-OWNER_TOKEN_SECRET";
+    return crypto.createHmac("sha256", secret).update(videoId).digest("hex");
   }
 
   private async finalizeUpload(

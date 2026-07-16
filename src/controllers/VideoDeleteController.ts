@@ -6,8 +6,8 @@ export class VideoDeleteController {
 
   handle = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const requesterUploader = typeof req.body?.uploader === "string" ? req.body.uploader : undefined;
-      await this.deleteService.delete(req.params.id as string, requesterUploader);
+      const ownerToken = typeof req.body?.ownerToken === "string" ? req.body.ownerToken : undefined;
+      await this.deleteService.delete(req.params.id as string, ownerToken);
       res.json({ success: true });
     } catch (error) {
       next(error);

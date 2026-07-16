@@ -54,3 +54,7 @@ export interface ClientVideoView {
   thumbnailUrl: string;
   qualities?: Record<string, string>;
 }
+
+export interface UploadVideoResult extends ClientVideoView {
+  ownerToken: string;
+}
