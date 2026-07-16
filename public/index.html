@@ -1,0 +1,592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Reels</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body { font-family: system-ui, -apple-system, sans-serif; background: #000; color: #fff; overflow: hidden; height: 100dvh; }
+  
+  #reelContainer {
+    height: 100dvh;
+    overflow-y: scroll;
+    scroll-snap-type: y mandatory;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  #reelContainer::-webkit-scrollbar { display: none; }
+
+  .reel {
+    position: relative;
+    height: 100dvh;
+    scroll-snap-align: start;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #000;
+  }
+  .reel video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+    cursor: pointer;
+  }
+
+  .play-pause-icon {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 64px;
+    height: 64px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .2s;
+  }
+  .play-pause-icon.show {
+    opacity: 1;
+    animation: fadeOut .5s ease forwards .3s;
+  }
+  @keyframes fadeOut {
+    to { opacity: 0; }
+  }
+
+  .reel-overlay {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 60px 16px 20px;
+    background: linear-gradient(transparent, rgba(0,0,0,.7) 40%);
+    pointer-events: none;
+  }
+  .reel-overlay > * { pointer-events: auto; }
+  .reel-overlay h3 { font-size: 1rem; font-weight: 600; margin-bottom: 2px; }
+  .reel-overlay .sub { font-size: .8rem; color: #ccc; }
+  .reel-overlay .desc { font-size: .8rem; color: #aaa; margin-top: 4px; }
+  .reel-overlay .tags { font-size: .75rem; color: #888; margin-top: 2px; }
+  .reel-overlay .counts { display: flex; gap: 12px; font-size: .75rem; color: #999; margin-top: 6px; }
+
+  .reel-actions {
+    position: absolute;
+    right: 12px;
+    bottom: 120px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    align-items: center;
+    pointer-events: none;
+  }
+  .reel-actions > * { pointer-events: auto; }
+  .action-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    cursor: pointer;
+    color: #fff;
+    background: none;
+    border: none;
+    font-size: .65rem;
+  }
+  .action-btn svg {
+    width: 28px;
+    height: 28px;
+    filter: drop-shadow(0 1px 3px rgba(0,0,0,.5));
+  }
+  .action-btn span { text-shadow: 0 1px 3px rgba(0,0,0,.5); }
+
+  .reel-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100dvh;
+    color: #666;
+    font-size: .9rem;
+  }
+
+  .fab {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    border-radius: 24px;
+    padding: 10px 20px;
+    font-size: .85rem;
+    font-weight: 600;
+    cursor: pointer;
+    z-index: 100;
+    box-shadow: 0 2px 12px rgba(59,130,246,.4);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: opacity .15s;
+  }
+  .fab:hover { opacity: .85; }
+  .fab svg { width: 18px; height: 18px; fill: currentColor; }
+
+  .quality-selector {
+    position: absolute;
+    top: 16px;
+    right: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    z-index: 10;
+    pointer-events: none;
+  }
+  .quality-selector > * { pointer-events: auto; }
+  .quality-btn {
+    background: rgba(0,0,0,.6);
+    border: 1px solid rgba(255,255,255,.3);
+    border-radius: 6px;
+    color: #fff;
+    font-size: .65rem;
+    padding: 3px 8px;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .quality-btn.active { background: #3b82f6; border-color: #3b82f6; }
+  .quality-btn:hover { background: rgba(59,130,246,.6); }
+
+  .upload-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    background: rgba(0,0,0,.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    backdrop-filter: blur(4px);
+  }
+  .upload-overlay.open { display: flex; }
+  .upload-card {
+    background: #1a1a1a;
+    border: 1px solid #2a2a2a;
+    border-radius: 16px;
+    padding: 24px;
+    width: 100%;
+    max-width: 420px;
+    max-height: 90dvh;
+    overflow-y: auto;
+  }
+  .upload-card h2 { font-size: 1.1rem; margin-bottom: 16px; }
+  .upload-card .close-btn {
+    float: right;
+    background: none;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 1.2rem;
+  }
+  label { display: block; font-size: .8rem; color: #999; margin-bottom: 3px; }
+  input, textarea, select {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid #333;
+    border-radius: 8px;
+    background: #222;
+    color: #eee;
+    font-size: .85rem;
+    margin-bottom: 10px;
+  }
+  textarea { resize: vertical; min-height: 50px; }
+  input[type="file"] { padding: 6px; }
+  input[type="file"]::file-selector-button {
+    background: #333; color: #eee; border: 1px solid #555;
+    border-radius: 6px; padding: 5px 10px; cursor: pointer; margin-right: 8px;
+  }
+  .btn-primary {
+    width: 100%;
+    padding: 10px;
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    font-size: .9rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn-primary:hover { opacity: .85; }
+  .status { margin-top: 10px; padding: 8px 12px; border-radius: 8px; font-size: .8rem; display: none; }
+  .status.error { display: block; background: #2d1b1b; border: 1px solid #ef4444; color: #fca5a5; }
+  .status.success { display: block; background: #1b2d1b; border: 1px solid #22c55e; color: #86efac; }
+  .status.info { display: block; background: #1b1b2d; border: 1px solid #3b82f6; color: #93c5fd; }
+  .status pre { margin-top: 4px; white-space: pre-wrap; font-size: .7rem; opacity: .8; }
+  .progress-wrap { width:100%; height:6px; background:#333; border-radius:3px; margin-top:10px; overflow:hidden; display:none; }
+  .progress-bar { height:100%; width:0%; background:#3b82f6; border-radius:3px; transition: width .2s; }
+</style>
+</head>
+<body>
+
+<div id="reelContainer">
+  <div class="reel-loading" id="loadingMsg">Loading reels...</div>
+</div>
+
+<button class="fab" id="openUpload">
+  <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+  Upload
+</button>
+
+<div class="upload-overlay" id="uploadOverlay">
+  <div class="upload-card">
+    <button class="close-btn" id="closeUpload">&times;</button>
+    <h2>Upload Reel</h2>
+    <form id="uploadForm">
+      <label>Video *</label>
+      <input type="file" id="videoFile" accept="video/*" required>
+      <label>Title *</label>
+      <input type="text" id="title" placeholder="My cool reel" required>
+      <label>Description</label>
+      <textarea id="description" placeholder="Optional..."></textarea>
+      <label>Uploader *</label>
+      <input type="text" id="uploader" value="demo-user" required>
+      <label>Category</label>
+      <select id="category">
+        <option value="entertainment">Entertainment</option>
+        <option value="music">Music</option>
+        <option value="sports">Sports</option>
+        <option value="education">Education</option>
+        <option value="gaming">Gaming</option>
+        <option value="news">News</option>
+        <option value="other">Other</option>
+      </select>
+      <label>Hashtags (comma separated)</label>
+      <input type="text" id="hashtags" placeholder="fun, viral">
+      <button type="submit" class="btn-primary">Upload</button>
+      <div id="uploadStatus" class="status"></div>
+      <div class="progress-wrap" id="progressWrap"><div class="progress-bar" id="progressBar"></div></div>
+    </form>
+  </div>
+</div>
+
+<script>
+const API = '';
+const reelContainer = $('reelContainer');
+let selectedQuality = localStorage.getItem('reelQuality') || 'original';
+
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[m]); }
+function escAttr(s) { return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[m]); }
+function fmt(s) { if (!s) return '0:00'; const m = Math.floor(s/60); const sec = Math.floor(s%60); return m+':'+String(sec).padStart(2,'0'); }
+
+let videos = [];
+let playingVideoId = null;
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    const vid = entry.target.querySelector('video');
+    if (!vid) return;
+    if (entry.isIntersecting) {
+      vid.muted = false;
+      vid.play().catch(() => {});
+    } else {
+      vid.pause();
+    }
+  });
+}, { threshold: 0.7 });
+
+async function loadFeed() {
+  try {
+    const res = await fetch(API + '/api/videos?perPage=50');
+    const data = await res.json();
+    videos = data.items || [];
+    renderReels();
+  } catch {}
+}
+
+function getQualityUrl(reel, label) {
+  if (label === 'original') return reel.dataset.original;
+  const qualities = JSON.parse(reel.dataset.qualities || '{}');
+  return qualities[label];
+}
+
+function applyQualityToVideo(video, reel) {
+  if (!video) return;
+  const url = getQualityUrl(reel, selectedQuality);
+  if (!url || url === video.src) return;
+  const pos = video.currentTime;
+  const wasPaused = video.paused;
+  video.src = url;
+  video.load();
+  if (pos > 0) video.currentTime = pos;
+  if (!wasPaused) video.play().catch(() => {});
+}
+
+function renderReels() {
+  if (videos.length === 0) {
+    reelContainer.innerHTML = '<div class="reel-loading">No reels yet. Tap Upload to add one!</div>';
+    return;
+  }
+  reelContainer.innerHTML = videos.map((v, i) => `
+    <div class="reel" data-id="${escAttr(v.id)}" data-index="${i}" data-qualities='${escAttr(JSON.stringify(v.qualities || {}))}' data-original='${escAttr(v.videoUrl)}'>
+      <video src="${escAttr(v.videoUrl)}" autoplay muted playsinline preload="auto" loop onclick="togglePlay(this)"></video>
+      <svg class="play-pause-icon" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+      ${renderQualitySelector(v)}
+      <div class="reel-actions">
+        <div class="action-btn" onclick="likeVideo('${escAttr(v.id)}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>
+          <span>${v.likes}</span>
+        </div>
+        <div class="action-btn" onclick="shareVideo('${escAttr(v.id)}')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
+          <span>${v.shares}</span>
+        </div>
+      </div>
+      <div class="reel-overlay">
+        <h3>${esc(v.title)}</h3>
+        <div class="sub">${esc(v.uploader)} · ${esc(v.category)} · ${fmt(v.duration)}</div>
+        ${v.description ? '<div class="desc">'+esc(v.description)+'</div>' : ''}
+        ${v.hashtags?.length ? '<div class="tags">'+v.hashtags.map(h=>'#'+h).join(' ')+'</div>' : ''}
+        <div class="counts"><span>♥ ${v.likes}</span><span>↗ ${v.shares}</span><span>▶ ${v.views} views</span></div>
+      </div>
+    </div>
+  `).join('');
+
+  document.querySelectorAll('.reel').forEach(el => {
+    observer.observe(el);
+    const video = el.querySelector('video');
+    if (selectedQuality !== 'original') applyQualityToVideo(video, el);
+  });
+}
+
+async function likeVideo(id) {
+  try { await fetch(API + '/api/videos/' + id + '/like', { method: 'POST' }); } catch {}
+  const v = videos.find(x => x.id === id);
+  if (v) { v.likes++; const el = document.querySelector(`.reel[data-id="${escAttr(id)}"]`); if (el) { el.innerHTML = renderSingle(v); if (selectedQuality !== 'original') applyQualityToVideo(el.querySelector('video'), el); } }
+}
+
+async function shareVideo(id) {
+  try { await fetch(API + '/api/videos/' + id + '/share', { method: 'POST' }); } catch {}
+  const v = videos.find(x => x.id === id);
+  if (v) { v.shares++; const el = document.querySelector(`.reel[data-id="${escAttr(id)}"]`); if (el) { el.innerHTML = renderSingle(v); if (selectedQuality !== 'original') applyQualityToVideo(el.querySelector('video'), el); } }
+  try { await navigator.share({ url: window.location.href }); } catch {}
+}
+
+function renderQualitySelector(v) {
+  const qs = v.qualities;
+  const hasQualities = qs && Object.keys(qs).length > 0;
+  if (!hasQualities) return '';
+  const labels = Object.keys(qs).sort((a, b) => {
+    const na = parseInt(a), nb = parseInt(b);
+    return (isNaN(na) ? 0 : na) - (isNaN(nb) ? 0 : nb);
+  });
+  return '<div class="quality-selector">' +
+    '<button class="quality-btn' + (selectedQuality === 'original' ? ' active' : '') + '" data-quality="original" onclick="event.stopPropagation(); switchQuality(\'' + escAttr(v.id) + '\',\'original\',this)">Original</button>' +
+    labels.map(l =>
+      '<button class="quality-btn' + (selectedQuality === l ? ' active' : '') + '" data-quality="' + escAttr(l) + '" onclick="event.stopPropagation(); switchQuality(\'' + escAttr(v.id) + '\',\'' + escAttr(l) + '\',this)">' + esc(l) + '</button>'
+    ).join('') + '</div>';
+}
+
+function switchQuality(id, label, btn) {
+  selectedQuality = label;
+  localStorage.setItem('reelQuality', label);
+  document.querySelectorAll('.quality-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.quality-btn[data-quality="' + label + '"]').forEach(b => b.classList.add('active'));
+  document.querySelectorAll('.reel').forEach(reel => {
+    const video = reel.querySelector('video');
+    applyQualityToVideo(video, reel);
+  });
+}
+
+function renderSingle(v) {
+  return `<video src="${escAttr(v.videoUrl)}" autoplay muted playsinline preload="auto" loop onclick="togglePlay(this)"></video>
+    <svg class="play-pause-icon" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>
+    ${renderQualitySelector(v)}
+    <div class="reel-actions">
+      <div class="action-btn" onclick="likeVideo('${escAttr(v.id)}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1a5.5 5.5 0 00-7.8 7.8l1 1L12 21l7.8-7.8 1-1a5.5 5.5 0 000-7.8z"/></svg>
+        <span>${v.likes}</span>
+      </div>
+      <div class="action-btn" onclick="shareVideo('${escAttr(v.id)}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2"><path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13"/></svg>
+        <span>${v.shares}</span>
+      </div>
+    </div>
+    <div class="reel-overlay">
+      <h3>${esc(v.title)}</h3>
+      <div class="sub">${esc(v.uploader)} · ${esc(v.category)} · ${fmt(v.duration)}</div>
+      ${v.description ? '<div class="desc">'+esc(v.description)+'</div>' : ''}
+      ${v.hashtags?.length ? '<div class="tags">'+v.hashtags.map(h=>'#'+h).join(' ')+'</div>' : ''}
+      <div class="counts"><span>♥ ${v.likes}</span><span>↗ ${v.shares}</span><span>▶ ${v.views} views</span></div>
+    </div>`;
+}
+
+function togglePlay(vid) {
+  const icon = vid.parentElement.querySelector('.play-pause-icon');
+  if (vid.paused) {
+    vid.play();
+    if (icon) { icon.innerHTML = '<path d="M8 5v14l11-7z"/>'; icon.classList.add('show'); setTimeout(() => icon.classList.remove('show'), 600); }
+  } else {
+    vid.pause();
+    if (icon) { icon.innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>'; icon.classList.add('show'); setTimeout(() => icon.classList.remove('show'), 600); }
+  }
+}
+
+$('openUpload').onclick = () => $('uploadOverlay').classList.add('open');
+$('closeUpload').onclick = () => $('uploadOverlay').classList.remove('open');
+$('uploadOverlay').onclick = (e) => { if (e.target === $('uploadOverlay')) $('uploadOverlay').classList.remove('open'); };
+
+let wakeLock = null;
+async function requestWakeLock() {
+  try { wakeLock = await navigator.wakeLock.request('screen'); } catch {}
+}
+function releaseWakeLock() {
+  if (wakeLock) { try { wakeLock.release(); } catch {} wakeLock = null; }
+}
+
+const CHUNK_SIZE = 1024 * 1024;
+
+$('uploadForm').onsubmit = async (e) => {
+  e.preventDefault();
+  const s = $('uploadStatus');
+  const pb = $('progressBar');
+  const pw = $('progressWrap');
+  const file = $('videoFile').files[0];
+  if (!file) { s.className = 'status error'; s.textContent = 'Please select a file'; s.style.display = 'block'; return; }
+
+  await requestWakeLock();
+
+  const sizeMB = (file.size / 1048576).toFixed(1);
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+  s.className = 'status info'; s.textContent = 'Starting upload (' + totalChunks + ' chunks)...'; s.style.display = 'block';
+  pb.style.width = '0%'; pw.style.display = 'block';
+
+  let uploadId;
+  try {
+    const initRes = await fetch(API + '/api/videos/init-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: $('title').value,
+        description: $('description').value,
+        uploader: $('uploader').value,
+        category: $('category').value,
+        hashtags: $('hashtags').value,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+        totalChunks
+      })
+    });
+    const initData = await initRes.json();
+    if (!initData.uploadId) { s.className = 'status error'; s.textContent = 'Init failed'; releaseWakeLock(); return; }
+    uploadId = initData.uploadId;
+  } catch (err) {
+    s.className = 'status error'; s.textContent = 'Init error: ' + err.message; releaseWakeLock(); return;
+  }
+
+  let totalLoaded = 0;
+  let lastProgress = Date.now();
+  const stallTimer = setInterval(() => {
+    if (Date.now() - lastProgress > 30000) {
+      s.textContent = s.textContent.replace(' (stalled?)', '') + ' (stalled?)';
+    }
+  }, 5000);
+
+  function readAsBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  const uploaded = new Set();
+
+  async function uploadOneChunk(index, chunk) {
+    const b64 = await readAsBase64(chunk);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    try {
+      const res = await fetch(API + '/api/videos/upload-chunk?uploadId=' + encodeURIComponent(uploadId) + '&index=' + (index - 1), {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain' },
+        body: b64,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error('Bad response: ' + text.slice(0,150)); }
+      if (!data.success) throw new Error(data.message || 'rejected');
+      if (!uploaded.has(index)) {
+        uploaded.add(index);
+        totalLoaded += chunk.size;
+        const p = Math.min(Math.round(totalLoaded / file.size * 100), 100);
+        const m = (totalLoaded / 1048576).toFixed(1);
+        pb.style.width = p + '%';
+        s.textContent = 'Uploading ' + sizeMB + 'MB... ' + p + '% (' + m + 'MB)  chunk ' + index + '/' + totalChunks;
+        lastProgress = Date.now();
+      }
+      return true;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
+  }
+
+  async function uploadWithRetry(index, chunk, errMsg) {
+    for (let r = 0; r < 3; r++) {
+      try {
+        return await uploadOneChunk(index, chunk);
+      } catch (err) {
+        errMsg.push(err.name === 'AbortError' ? 'timeout(' + index + ')' : err.message);
+        if (r < 2) await new Promise(r2 => setTimeout(r2, 3000));
+      }
+    }
+    return false;
+  }
+
+  const PARALLEL = 2;
+  for (let start = 0; start < totalChunks; start += PARALLEL) {
+    const end = Math.min(start + PARALLEL, totalChunks);
+    const tasks = [];
+    const errMsg = [];
+    for (let j = start; j < end; j++) {
+      const idx = j + 1;
+      const chunk = file.slice(j * CHUNK_SIZE, Math.min((j + 1) * CHUNK_SIZE, file.size));
+      tasks.push(uploadWithRetry(idx, chunk, errMsg).then(ok => ({ idx, ok })));
+    }
+    const results = await Promise.all(tasks);
+    const failed = results.filter(r => !r.ok);
+    if (failed.length > 0) {
+      s.className = 'status error'; s.textContent = 'Chunk ' + failed[0].idx + ' failed: ' + errMsg.join(' | ') + '. Tap Upload to retry.'; releaseWakeLock(); clearInterval(stallTimer); return;
+    }
+  }
+
+  clearInterval(stallTimer);
+  s.textContent = 'Completing upload...';
+
+  try {
+    const compRes = await fetch(API + '/api/videos/complete-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId })
+    });
+    const compData = await compRes.json();
+    pw.style.display = 'none';
+    if (!compData.success) { s.className = 'status error'; s.textContent = 'Processing failed: ' + (compData.message || 'unknown'); releaseWakeLock(); return; }
+    s.className = 'status success'; s.textContent = 'Uploaded! Processing in background...';
+    $('uploadForm').reset();
+    $('uploader').value = 'demo-user';
+    $('category').value = 'entertainment';
+    setTimeout(() => { $('uploadOverlay').classList.remove('open'); loadFeed(); }, 1500);
+  } catch (err) {
+    pw.style.display = 'none'; s.className = 'status error'; s.textContent = 'Error: ' + err.message;
+  }
+  releaseWakeLock();
+};
+
+loadFeed();
+</script>
+</body>
+</html>

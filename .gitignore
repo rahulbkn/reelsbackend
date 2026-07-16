@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# build artifacts
+dist/
+.wrangler/
+
+# env
+.env
+
+# logs
+*.log
+
+# system
+.DS_Store
+
+# tests/coverage
+coverage/
+.vitest/
+
+# IDE/misc
+.vscode/
+.idea/
