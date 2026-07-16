@@ -21,3 +21,9 @@ coverage/
 # IDE/misc
 .vscode/
 .idea/
+
+# local storage (committed by accident)
+storage/
+
+# compiled JS (TypeScript output)
+src/**/*.js
