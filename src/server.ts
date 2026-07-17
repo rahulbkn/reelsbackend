@@ -30,6 +30,17 @@ async function handleRequest(request: Request, app: ReturnType<typeof createApp>
   const rawHeaders: Record<string, string> = {};
   request.headers.forEach((v, k) => { rawHeaders[k] = v; });
 
+  // Fully buffer the inbound body before Express starts — avoids stream races
+  // that hang body-parser on large chunk uploads in Workers.
+  let bodyBuf = Buffer.alloc(0);
+  if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
+    try {
+      bodyBuf = Buffer.from(await request.arrayBuffer());
+    } catch {
+      bodyBuf = Buffer.alloc(0);
+    }
+  }
+
   const chunks: Buffer[] = [];
   let statusCode = 200;
   const respHeaders = new Headers();
@@ -44,11 +55,12 @@ async function handleRequest(request: Request, app: ReturnType<typeof createApp>
   Object.assign(req, {
     method: request.method,
     url: request.url,
+    originalUrl: url.pathname + url.search,
     headers: rawHeaders,
     httpVersion: "1.1",
     query: Object.fromEntries(url.searchParams.entries()),
     params: {},
-    body: {},
+    body: undefined,
     files: {},
     path: url.pathname,
     hostname: url.hostname,
@@ -144,34 +156,31 @@ async function handleRequest(request: Request, app: ReturnType<typeof createApp>
 
   (req as any).res = res;
 
-  if (request.body) {
-    const reader = request.body.getReader();
-    function pump() {
-      reader.read().then(({ done, value }) => {
-        if (done) { req.push(null); return; }
-        req.push(Buffer.from(value));
-        pump();
-      }).catch(() => req.destroy());
-    }
-    pump();
-  } else {
-    req.push(null);
-  }
+  // Push the full body before Express attaches listeners so body-parser sees data.
+  if (bodyBuf.length > 0) req.push(bodyBuf);
+  req.push(null);
 
   return new Promise<Response>((resolve) => {
-    res.on("finish", () => resolve(buildResponse()));
+    let settled = false;
+    const settle = (response: Response) => {
+      if (settled) return;
+      settled = true;
+      resolve(response);
+    };
+
+    res.on("finish", () => settle(buildResponse()));
 
     try {
       app(req as any, res as any, (err: unknown) => {
         if (!res.finished) {
           if (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            resolve(new Response(JSON.stringify({ error: msg }), {
+            settle(new Response(JSON.stringify({ error: msg }), {
               status: 500,
               headers: { "Content-Type": "application/json" },
             }));
           } else {
-            resolve(new Response(JSON.stringify({ error: "Not Found" }), {
+            settle(new Response(JSON.stringify({ error: "Not Found" }), {
               status: 404,
               headers: { "Content-Type": "application/json" },
             }));
@@ -180,7 +189,7 @@ async function handleRequest(request: Request, app: ReturnType<typeof createApp>
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      resolve(new Response(JSON.stringify({ error: msg }), {
+      settle(new Response(JSON.stringify({ error: msg }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
       }));

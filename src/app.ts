@@ -12,14 +12,17 @@ const logger = createLogger("app");
 export function createApp(env: ConfigEnv & { DB?: D1Database; KV?: KVNamespace }): Express {
   const app = express();
 
-  app.use(express.text({ type: "text/plain", limit: "10mb" }));
-  app.use(express.json({ limit: "10mb" }));
+  // Binary chunks (preferred) — keeps CPU low on Workers (no base64 decode).
+  app.use(express.raw({ type: ["application/octet-stream", "application/offset+octet-stream"], limit: "6mb" }));
+  // Legacy base64 text chunks
+  app.use(express.text({ type: "text/plain", limit: "6mb" }));
+  app.use(express.json({ limit: "2mb" }));
   app.use(express.static("public"));
 
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Device-Id");
     if (_req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });

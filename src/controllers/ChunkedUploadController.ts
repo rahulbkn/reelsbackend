@@ -59,21 +59,39 @@ export class ChunkedUploadController {
       if (!uploadId || chunkIndex === undefined) throw new BadRequestError("Missing uploadId or index query param");
       if (!this.kv) throw new BadRequestError("KV namespace not available");
 
-      const b64 = req.body as string;
-      if (!b64 || typeof b64 !== "string" || b64.length === 0) {
-        throw new BadRequestError("No base64 chunk data in body");
+      const chunk = this.parseChunkBody(req.body);
+      if (chunk.length === 0) throw new BadRequestError("Empty chunk body");
+      // Cloudflare KV value limit is 25 MiB; keep chunks well under that.
+      if (chunk.length > 5 * 1024 * 1024) {
+        throw new BadRequestError("Chunk too large (max 5MB)");
       }
-
-      const chunk = Buffer.from(b64, "base64");
-      if (chunk.length === 0) throw new BadRequestError("Empty chunk after base64 decode");
 
       await this.kv.put(`upload:${uploadId}:chunk:${chunkIndex}`, chunk, { expirationTtl: 86400 });
 
-      res.json({ success: true, chunkIndex: Number(chunkIndex) });
+      res.json({ success: true, chunkIndex: Number(chunkIndex), bytes: chunk.length });
     } catch (error) {
       next(error);
     }
   };
+
+  /** Accept raw binary (preferred) or legacy base64 text. */
+  private parseChunkBody(body: unknown): Buffer {
+    if (Buffer.isBuffer(body)) return body;
+    if (body instanceof ArrayBuffer) return Buffer.from(body);
+    if (ArrayBuffer.isView(body)) {
+      return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    }
+    if (typeof body === "string") {
+      if (!body.length) return Buffer.alloc(0);
+      // Heuristic: pure base64 payloads from older clients
+      const compact = body.replace(/\s+/g, "");
+      if (/^[A-Za-z0-9+/]+=*$/.test(compact) && compact.length % 4 === 0) {
+        return Buffer.from(compact, "base64");
+      }
+      return Buffer.from(body, "binary");
+    }
+    throw new BadRequestError("No chunk data in body");
+  }
 
   completeUpload = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

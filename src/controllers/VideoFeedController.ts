@@ -27,28 +27,30 @@ export class VideoFeedController {
     }
   };
 
-      recordView = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
+  recordView = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
       await this.feedService.recordView(req.params.id as string);
       res.json({ success: true });
-      } catch (error) {
+    } catch (error) {
       next(error);
-      }
-      };
+    }
+  };
 
-      like = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-      await this.feedService.like(req.params.id as string);
-      res.json({ success: true });
-      } catch (error) {
+  like = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const deviceId = req.body?.deviceId ?? req.headers["x-device-id"];
+      const result = await this.feedService.like(req.params.id as string, deviceId);
+      res.json({ success: true, counted: result.counted, alreadyCounted: !result.counted });
+    } catch (error) {
       next(error);
-      }
-      };
+    }
+  };
 
-      share = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-      try {
-      await this.feedService.share(req.params.id as string);
-      res.json({ success: true });
+  share = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const deviceId = req.body?.deviceId ?? req.headers["x-device-id"];
+      const result = await this.feedService.share(req.params.id as string, deviceId);
+      res.json({ success: true, counted: result.counted, alreadyCounted: !result.counted });
     } catch (error) {
       next(error);
     }

@@ -6,7 +6,13 @@ export class CommentController {
 
   add = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const comment = await this.commentService.add(req.params.id as string, req.body?.author, req.body?.text);
+      const deviceId = req.body?.deviceId ?? req.headers["x-device-id"];
+      const comment = await this.commentService.add(
+        req.params.id as string,
+        req.body?.author,
+        req.body?.text,
+        deviceId
+      );
       res.status(201).json({ success: true, data: comment });
     } catch (error) {
       next(error);

@@ -8,6 +8,7 @@ import { D1VideoRepository } from "../repositories/D1VideoRepository";
 import { InMemoryCommentRepository, CommentRepository } from "../repositories/CommentRepository";
 import { D1CommentRepository } from "../repositories/D1CommentRepository";
 import { InMemoryCacheStore, CacheStore } from "../utils/cache";
+import { DeviceInteractionStore } from "../utils/deviceInteractions";
 
 import { VideoUploadService } from "../services/VideoUploadService";
 import { VideoFeedService } from "../services/VideoFeedService";
@@ -47,11 +48,12 @@ export function buildContainer(env: Env & { DB?: D1Database; KV?: KVNamespace })
   const videos: VideoRepository = env.DB ? new D1VideoRepository(env.DB) : new InMemoryVideoRepository();
   const comments: CommentRepository = env.DB ? new D1CommentRepository(env.DB) : new InMemoryCommentRepository();
   const cache: CacheStore = new InMemoryCacheStore();
+  const interactions = new DeviceInteractionStore(env.KV || null, cache);
 
   const uploadService = new VideoUploadService(storage, videos, env.TRANSCODER_URL, env.TRANSCODER_SECRET, env.OWNER_TOKEN_SECRET);
-  const feedService = new VideoFeedService(storage, videos, cache);
+  const feedService = new VideoFeedService(storage, videos, cache, interactions);
   const deleteService = new VideoDeleteService(storage, videos, env.OWNER_TOKEN_SECRET, comments);
-  const commentService = new CommentService(comments, videos);
+  const commentService = new CommentService(comments, videos, interactions);
 
   return {
     storage,
