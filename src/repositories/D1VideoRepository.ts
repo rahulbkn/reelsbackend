@@ -25,6 +25,8 @@ interface Row {
   thumbnail_key: string | null;
   storage_unique_id: string | null;
   qualities: string;
+  hls_playlists: string | null;
+  quality_meta: string | null;
 }
 
 function rowToMetadata(row: Row): VideoMetadata {
@@ -47,7 +49,9 @@ function rowToMetadata(row: Row): VideoMetadata {
     storageProvider: row.storage_provider,
     storageKey: row.storage_key,
     thumbnailKey: row.thumbnail_key ?? undefined,
-    qualities: row.qualities ? JSON.parse(row.qualities) : undefined
+    qualities: row.qualities ? JSON.parse(row.qualities) : undefined,
+    hlsPlaylists: row.hls_playlists ? JSON.parse(row.hls_playlists) : undefined,
+    qualityMeta: row.quality_meta ? JSON.parse(row.quality_meta) : undefined
   };
 }
 
@@ -61,13 +65,20 @@ const CREATE_TABLE_SQL =
   "likes INTEGER NOT NULL DEFAULT 0, comments INTEGER NOT NULL DEFAULT 0, " +
   "shares INTEGER NOT NULL DEFAULT 0, storage_provider TEXT NOT NULL, " +
   "storage_key TEXT NOT NULL, thumbnail_key TEXT, " +
-  "storage_unique_id TEXT UNIQUE, qualities TEXT NOT NULL DEFAULT '{}')";
+  "storage_unique_id TEXT UNIQUE, qualities TEXT NOT NULL DEFAULT '{}', " +
+  "hls_playlists TEXT NOT NULL DEFAULT '{}', quality_meta TEXT NOT NULL DEFAULT '{}')";
 
 const INDEX_STATEMENTS = [
   "CREATE INDEX IF NOT EXISTS idx_videos_upload_date ON videos(upload_date DESC)",
   "CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category)",
   "CREATE INDEX IF NOT EXISTS idx_videos_uploader ON videos(uploader)",
   "CREATE INDEX IF NOT EXISTS idx_videos_storage_unique_id ON videos(storage_unique_id)"
+];
+
+// Adds columns to tables created before this migration, without wiping data.
+const MIGRATION_STATEMENTS = [
+  "ALTER TABLE videos ADD COLUMN hls_playlists TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE videos ADD COLUMN quality_meta TEXT NOT NULL DEFAULT '{}'"
 ];
 
 let schemaInitialized = false;
@@ -77,6 +88,9 @@ async function ensureSchema(db: D1Database): Promise<void> {
   await db.prepare(CREATE_TABLE_SQL).run();
   for (const sql of INDEX_STATEMENTS) {
     try { await db.prepare(sql).run(); } catch {}
+  }
+  for (const sql of MIGRATION_STATEMENTS) {
+    try { await db.prepare(sql).run(); } catch {} // no-op if column already exists
   }
   schemaInitialized = true;
 }
@@ -92,8 +106,8 @@ export class D1VideoRepository implements VideoRepository {
 
     await this.db
       .prepare(
-        `INSERT INTO videos (id, title, description, hashtags, category, language, duration, width, height, uploader, upload_date, storage_provider, storage_key, thumbnail_key, qualities)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO videos (id, title, description, hashtags, category, language, duration, width, height, uploader, upload_date, storage_provider, storage_key, thumbnail_key, qualities, hls_playlists, quality_meta)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         id,
@@ -110,7 +124,9 @@ export class D1VideoRepository implements VideoRepository {
         data.storageProvider,
         data.storageKey,
         data.thumbnailKey ?? null,
-        JSON.stringify(data.qualities ?? {})
+        JSON.stringify(data.qualities ?? {}),
+        JSON.stringify(data.hlsPlaylists ?? {}),
+        JSON.stringify(data.qualityMeta ?? {})
       )
       .run();
 
@@ -133,7 +149,9 @@ export class D1VideoRepository implements VideoRepository {
       storageProvider: data.storageProvider,
       storageKey: data.storageKey,
       thumbnailKey: data.thumbnailKey,
-      qualities: data.qualities
+      qualities: data.qualities,
+      hlsPlaylists: data.hlsPlaylists,
+      qualityMeta: data.qualityMeta
     };
   }
 
@@ -191,6 +209,8 @@ export class D1VideoRepository implements VideoRepository {
     if (patch.storageKey !== undefined) { sets.push("storage_key = ?"); bindings.push(patch.storageKey); }
     if (patch.thumbnailKey !== undefined) { sets.push("thumbnail_key = ?"); bindings.push(patch.thumbnailKey ?? null); }
     if (patch.qualities !== undefined) { sets.push("qualities = ?"); bindings.push(JSON.stringify(patch.qualities)); }
+    if (patch.hlsPlaylists !== undefined) { sets.push("hls_playlists = ?"); bindings.push(JSON.stringify(patch.hlsPlaylists)); }
+    if (patch.qualityMeta !== undefined) { sets.push("quality_meta = ?"); bindings.push(JSON.stringify(patch.qualityMeta)); }
 
     if (sets.length === 0) return;
     bindings.push(id);

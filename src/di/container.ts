@@ -64,7 +64,7 @@ export function buildContainer(env: Env & { DB?: D1Database; KV?: KVNamespace })
     videoDeleteController: new VideoDeleteController(deleteService),
     commentController: new CommentController(commentService),
     streamController: new StreamController(storage),
-    hlsController: new HlsController(),
+    hlsController: new HlsController(videos),
     chunkedUploadController: new ChunkedUploadController(uploadService, env.KV || null),
     transcodeController: new TranscodeController(uploadService, env.TRANSCODER_SECRET || "")
   };

@@ -1,81 +1,70 @@
 import type { Request, Response, NextFunction } from "express";
-import { BadRequestError, UpstreamServiceError } from "../utils/errors";
+import type { VideoRepository } from "../repositories/VideoRepository";
+import { BadRequestError, NotFoundError } from "../utils/errors";
 import { createLogger } from "../utils/logger";
 
 const logger = createLogger("HlsController");
-const CACHE_NAMESPACE = "reels-video-cache";
-const SEGMENT_SIZE = 2 * 1024 * 1024; // 2 MB per segment
 
+/**
+ * Serves adaptive HLS without any per-segment object storage. Each quality
+ * is transcoded by transcoder/server.js into ONE media file plus a
+ * single-file playlist (EXT-X-BYTERANGE against that one file). Byte-range
+ * playback is handled entirely by the existing /stream Range support —
+ * this controller only needs to build the master playlist and fill in the
+ * real stream URL on each variant playlist.
+ */
 export class HlsController {
-  handle = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+  constructor(private readonly videos: VideoRepository) {}
+
+  master = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const key = String(req.query.key || "");
-      if (!key) throw new BadRequestError("Missing 'key' query parameter");
+      const id = String(req.query.id || "");
+      if (!id) throw new BadRequestError("Missing 'id' query parameter");
 
-      const fileId = this.extractFileId(key);
-      if (!fileId) throw new BadRequestError("Invalid storage key");
-
-      const fileSize = await this.resolveFileSize(fileId, key);
-      if (!fileSize || fileSize <= 0) {
-        throw new UpstreamServiceError("Could not determine file size for HLS manifest");
+      const record = await this.videos.getById(id);
+      if (!record) throw new NotFoundError(`Video "${id}" not found`);
+      if (!record.hlsPlaylists || Object.keys(record.hlsPlaylists).length === 0) {
+        throw new NotFoundError(`No HLS renditions available for video "${id}" yet`);
       }
 
-      const numSegments = Math.ceil(fileSize / SEGMENT_SIZE);
-      const streamPath = `/stream?key=${encodeURIComponent(key)}&variant=video`;
-      const targetDuration = 10;
-
-      let playlist = `#EXTM3U\n#EXT-X-VERSION:4\n#EXT-X-TARGETDURATION:${targetDuration}\n`;
-      playlist += `#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n`;
-
-      for (let i = 0; i < numSegments; i++) {
-        const start = i * SEGMENT_SIZE;
-        const end = Math.min(start + SEGMENT_SIZE, fileSize);
-        const byteLength = end - start;
-        playlist += `#EXTINF:${targetDuration},\n#EXT-X-BYTERANGE:${byteLength}@${start}\n${streamPath}\n`;
+      let playlist = "#EXTM3U\n#EXT-X-VERSION:4\n";
+      for (const label of Object.keys(record.hlsPlaylists)) {
+        const meta = record.qualityMeta?.[label];
+        const bandwidth = meta?.bandwidth ?? 1000000;
+        const resolution = meta ? `,RESOLUTION=${meta.width}x${meta.height}` : "";
+        playlist += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth}${resolution}\n`;
+        playlist += `/hls/variant?id=${encodeURIComponent(id)}&q=${encodeURIComponent(label)}\n`;
       }
-
-      playlist += "#EXT-X-ENDLIST\n";
 
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      res.setHeader("Content-Disposition", 'attachment; filename="playlist.m3u8"');
-      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.setHeader("Cache-Control", "public, max-age=300");
       res.send(playlist);
     } catch (error) {
       next(error);
     }
   };
 
-  private extractFileId(storageKey: string): string | null {
-    const sepIdx = storageKey.indexOf("::");
-    const base = sepIdx !== -1 ? storageKey.slice(0, sepIdx) : storageKey;
-    const parts = base.split(":");
-    if (parts.length < 3) return null;
-    return parts.slice(2).join(":");
-  }
-
-  private async resolveFileSize(fileId: string, storageKey: string): Promise<number | null> {
+  variant = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const cacheUrl = `https://${CACHE_NAMESPACE}/video/${fileId}`;
-      const cached = await caches.default.match(new Request(cacheUrl));
-      if (cached?.ok) {
-        const len = Number(cached.headers.get("content-length"));
-        if (len > 0) return len;
-      }
-    } catch {}
+      const id = String(req.query.id || "");
+      const q = String(req.query.q || "");
+      if (!id || !q) throw new BadRequestError("Missing 'id' or 'q' query parameter");
 
-    try {
-      const url = new URL("/stream", "https://reels-backend.rahulkumarbknv.workers.dev");
-      url.searchParams.set("key", storageKey);
-      url.searchParams.set("variant", "video");
-      const headResp = await fetch(url.toString(), { method: "HEAD" });
-      if (headResp.ok) {
-        const len = Number(headResp.headers.get("content-length"));
-        if (len > 0) return len;
-      }
-    } catch (e) {
-      logger.error("resolveFileSize HEAD failed", { error: (e as Error).message });
+      const record = await this.videos.getById(id);
+      if (!record) throw new NotFoundError(`Video "${id}" not found`);
+
+      const template = record.hlsPlaylists?.[q];
+      const storageKey = record.qualities?.[q];
+      if (!template || !storageKey) throw new NotFoundError(`No rendition "${q}" for video "${id}"`);
+
+      const streamUrl = `/stream?key=${encodeURIComponent(storageKey)}&variant=video`;
+      const playlist = template.split("{{STREAM_URL}}").join(streamUrl);
+
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.send(playlist);
+    } catch (error) {
+      next(error);
     }
-
-    return null;
-  }
+  };
 }

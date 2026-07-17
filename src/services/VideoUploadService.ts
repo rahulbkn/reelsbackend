@@ -170,8 +170,22 @@ export class VideoUploadService {
     }
   }
 
-  async updateQualities(recordId: string, qualities: Record<string, string>): Promise<void> {
-    await this.videos.patch(recordId, { qualities });
+  /**
+   * Called by TranscodeController.callback once the transcoder finishes a
+   * quality (or all qualities). `qualities` maps label -> Telegram
+   * storageKey for that rendition's single-file .ts. `hlsPlaylists` maps
+   * label -> playlist text containing a "{{STREAM_URL}}" placeholder,
+   * resolved to a real /stream URL at request time by HlsController.
+   * `qualityMeta` carries the static bandwidth/resolution used to build
+   * the master playlist's EXT-X-STREAM-INF lines.
+   */
+  async updateQualities(
+    recordId: string,
+    qualities: Record<string, string>,
+    hlsPlaylists?: Record<string, string>,
+    qualityMeta?: Record<string, { bandwidth: number; width: number; height: number }>
+  ): Promise<void> {
+    await this.videos.patch(recordId, { qualities, hlsPlaylists, qualityMeta });
   }
 
   async resolveUrls(storageKey: string, thumbnailKey?: string): Promise<{ videoUrl: string; thumbnailUrl: string }> {
