@@ -67,6 +67,14 @@ export interface ClientVideoView {
   videoUrl: string;
   thumbnailUrl: string;
   qualities?: Record<string, string>;
+  /** Bandwidth/resolution per quality label — safe to expose as-is (no
+   *  storage keys), used client-side to match hls.js levels to labels
+   *  in the manual quality picker. Present only once HLS renditions
+   *  exist for the video. */
+  qualityMeta?: Record<string, { bandwidth: number; width: number; height: number }>;
+  /** True once at least one HLS rendition exists, so the client knows
+   *  whether to attach hls.js at /hls/master or fall back to videoUrl. */
+  hasHls?: boolean;
 }
 
 export interface UploadVideoResult extends ClientVideoView {

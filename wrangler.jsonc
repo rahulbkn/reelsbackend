@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "reels-backend",
   "main": "src/server.ts",
-  "compatibility_date": "2026-07-14",
+  "compatibility_date": "2026-05-01",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./public"

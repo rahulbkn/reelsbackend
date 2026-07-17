@@ -4,6 +4,7 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 		<title>Reels Backend</title>
+		<script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.15/hls.min.js"></script>
 		<style>
 			:root {
 				color-scheme: dark;
@@ -1218,11 +1219,19 @@
 		<script>
 			(() => {
 				const API = "";
-				// Smaller binary chunks are more reliable on Workers (CPU + network).
-				const CHUNK_SIZE = 512 * 1024; // 512 KB
-				const CHUNK_PARALLEL = 2;
+				// Larger chunks + a bit more parallelism = far fewer KV round
+				// trips per upload. 8MB was chosen to stay comfortably under
+				// both KV's 25MiB per-value cap and the Worker body-size limit
+				// (raised to 12mb in app.ts to give headroom above this).
+				const CHUNK_SIZE = 8 * 1024 * 1024; // 8 MB
+				const CHUNK_PARALLEL = 3;
 				const CHUNK_TIMEOUT_MS = 120000;
 				const CHUNK_RETRIES = 4;
+				// Files at or under this size skip chunking entirely and go
+				// straight through the existing single-request /api/videos
+				// multipart endpoint — zero KV round trips, just client -> Worker
+				// -> Telegram in one shot. Most reels-length clips land here.
+				const DIRECT_UPLOAD_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
 				const OWNER_TOKENS_KEY = "reels.ownerTokens";
 				const COMMENT_AUTHOR_KEY = "reels.commentAuthor";
 				const DEVICE_ID_KEY = "reels.deviceId";
@@ -1297,7 +1306,16 @@
 				let commentsLoading = false;
 				let hintHidden = false;
 				let moveLock = false;
-				let selectedQuality = localStorage.getItem("reelQuality") || "original";
+				let selectedQuality = localStorage.getItem("reelQuality") || "auto";
+
+				// --- HLS playback state -------------------------------------------
+				// currentHls: the active Hls.js instance (native-HLS browsers like
+				// Safari don't need one — they get the master playlist URL directly).
+				// levelLabelMap: hls.js level index -> quality label ("480p" etc.),
+				// built from EXT-X-STREAM-INF RESOLUTION lines once the manifest
+				// parses, so the manual quality picker can map a label to a level.
+				let currentHls = null;
+				let levelLabelMap = new Map();
 
 				function loadIdSet(key) {
 					try {
@@ -1481,6 +1499,7 @@
 				function renderReel({ animate = false } = {}) {
 					if (reels.length === 0) {
 						elements.emptyState.hidden = false;
+						teardownHls();
 						elements.video.pause();
 						elements.video.removeAttribute("src");
 						elements.video.removeAttribute("poster");
@@ -1552,24 +1571,116 @@
 						elements.stageMedia.classList.add("reel-enter");
 					}
 
-					const nextSrc = getPlaybackUrl(reel);
-					const currentSrc = elements.video.getAttribute("src") || elements.video.src || "";
-					const srcChanged =
-						!currentSrc ||
-						(currentSrc !== nextSrc && !currentSrc.endsWith(nextSrc) && !nextSrc.endsWith(currentSrc.replace(location.origin, "")));
-					if (srcChanged) {
-						elements.video.src = nextSrc;
-						if (reel.thumbnailUrl) elements.video.setAttribute("poster", reel.thumbnailUrl);
-						else elements.video.removeAttribute("poster");
-						elements.video.load();
-					}
-					elements.video.muted = false;
-					elements.video.play().catch(() => {
-						elements.video.muted = true;
-						elements.video.play().catch(() => {});
-					});
+					if (reel.thumbnailUrl) elements.video.setAttribute("poster", reel.thumbnailUrl);
+					else elements.video.removeAttribute("poster");
+
+					attachPlayback(reel);
 
 					recordView(reel.id);
+				}
+
+				// ---------- Playback: hls.js for real ABR, plain <video> fallback ----------
+
+				function teardownHls() {
+					if (currentHls) {
+						try {
+							currentHls.destroy();
+						} catch {}
+						currentHls = null;
+					}
+					levelLabelMap = new Map();
+				}
+
+				function supportsNativeHls() {
+					return elements.video.canPlayType("application/vnd.apple.mpegurl") !== "";
+				}
+
+				/** Loads whichever source fits the reel + browser: hls.js for
+				 *  Chrome/Firefox/Edge when HLS renditions exist, the browser's
+				 *  native HLS support on Safari/iOS, or the plain original MP4
+				 *  when no HLS renditions exist yet (still transcoding, or the
+				 *  provider hasn't finished the initial upload finalize step). */
+				function attachPlayback(reel) {
+					teardownHls();
+					const video = elements.video;
+					const wasPaused = video.paused;
+
+					// Use original MP4 for instant playback — /stream with Range support
+					// already handles seeking fine. HLS/ABR is only used when user
+					// explicitly picks a specific non-original quality.
+					if (selectedQuality === "original" || selectedQuality === "auto" || !reel.hasHls) {
+						video.src = reel.videoUrl;
+						video.load();
+						playOrMute(video);
+						return;
+					}
+
+					const masterUrl = `${API}/hls/master?id=${encodeURIComponent(reel.id)}`;
+
+					if (supportsNativeHls()) {
+						// Safari/iOS: no hls.js needed, the browser demuxes HLS itself.
+						// Manual quality pinning isn't available this way (Safari's
+						// native player manages ABR internally) — "auto" is implied.
+						video.src = masterUrl;
+						video.load();
+						playOrMute(video);
+						return;
+					}
+
+					if (window.Hls && window.Hls.isSupported()) {
+						const hls = new window.Hls({ maxBufferLength: 20 });
+						currentHls = hls;
+
+						hls.on(window.Hls.Events.MANIFEST_PARSED, (_evt, data) => {
+							levelLabelMap = new Map();
+							const meta = reel.qualityMeta || {};
+							(data.levels || []).forEach((level, idx) => {
+								const match = Object.entries(meta).find(([, m]) => m.height === level.height);
+								if (match) levelLabelMap.set(match[0], idx);
+							});
+							applySelectedLevel();
+							playOrMute(video);
+						});
+
+						hls.on(window.Hls.Events.ERROR, (_evt, data) => {
+							if (!data?.fatal) return;
+							if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+							else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+							else {
+								teardownHls();
+								video.src = reel.videoUrl;
+								video.load();
+								playOrMute(video);
+							}
+						});
+
+						hls.loadSource(masterUrl);
+						hls.attachMedia(video);
+						return;
+					}
+
+					// No HLS support at all (very old browser) — fall back to the
+					// original whole-file MP4.
+					video.src = reel.videoUrl;
+					video.load();
+					playOrMute(video);
+				}
+
+				function playOrMute(video) {
+					video.muted = false;
+					video.play().catch(() => {
+						video.muted = true;
+						video.play().catch(() => {});
+					});
+				}
+
+				function applySelectedLevel() {
+					if (!currentHls) return;
+					if (selectedQuality === "auto" || !levelLabelMap.has(selectedQuality)) {
+						currentHls.currentLevel = -1; // let hls.js pick based on bandwidth
+						return;
+					}
+					currentHls.currentLevel = levelLabelMap.get(selectedQuality);
 				}
 
 				async function recordView(id) {
@@ -1650,7 +1761,7 @@
 				};
 
 				const SWIPE_DISTANCE = 56;
-				const SWIPE_VELOCITY = 0.45; // px/ms
+				const SWIPE_VELOCITY = 0.45; // px per ms
 				const DRAG_FOLLOW = 0.42;
 
 				function isUiControl(target) {
@@ -1663,100 +1774,76 @@
 					);
 				}
 
+				/** Labels for the quality picker: "auto" (ABR), then each known
+				 *  HLS rendition sorted by resolution, then "original" (the
+				 *  untouched whole-file upload). Only shown once the reel has
+				 *  at least one HLS rendition — see renderQualitySelector. */
 				function qualityLabels(reel) {
-					const qs = reel?.qualities;
-					if (!qs || typeof qs !== "object") return [];
-					return Object.keys(qs).sort((a, b) => {
-						const na = parseInt(a, 10);
-						const nb = parseInt(b, 10);
-						if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
-						return String(a).localeCompare(String(b));
-					});
-				}
-
-				function getPlaybackUrl(reel, label = selectedQuality) {
-					if (!reel) return "";
-					if (label && label !== "original" && reel.qualities?.[label]) {
-						return reel.qualities[label];
-					}
-					return reel.videoUrl || "";
+					const meta = reel?.qualityMeta;
+					if (!meta || typeof meta !== "object") return [];
+					return Object.keys(meta).sort((a, b) => (meta[a].height || 0) - (meta[b].height || 0));
 				}
 
 				function renderQualitySelector(reel) {
 					const root = elements.qualitySelector;
 					if (!root) return;
-					if (!reel) {
+					if (!reel || !reel.hasHls) {
 						root.innerHTML = "";
 						root.dataset.visible = "false";
 						return;
 					}
 
-					// We include all labels, including 'original'
-					const labels = ['original', ...qualityLabels(reel).filter(l => l !== 'original')];
+					const labels = ["auto", ...qualityLabels(reel), "original"];
 					if (labels.length <= 1) {
 						root.dataset.visible = "false";
 						return;
 					}
 
-					// Toggle state management
 					const isOpen = root.dataset.expanded === "true";
-					
-					// If closed, we only show the single active quality button
-					// If open, we show the list of other options
+					const activeLabel = selectedQuality === "auto" ? "Auto" : selectedQuality;
+
 					const buttons = [
 						`<button type="button" class="quality-btn main-btn" id="toggleQuality" aria-expanded="${isOpen}">
-							${selectedQuality === "original" ? "Original" : selectedQuality}
+							${escapeHtml(activeLabel)}
 						</button>`,
-						...(isOpen ? labels.filter(label => label !== selectedQuality).map(
-							(label) =>
-								`<button type="button" class="quality-btn" data-quality="${escapeHtml(label)}">${label === "original" ? "Original" : escapeHtml(label)}</button>`
-						) : [])
+						...(isOpen
+							? labels
+									.filter((label) => label !== selectedQuality)
+									.map(
+										(label) =>
+											`<button type="button" class="quality-btn" data-quality="${escapeHtml(label)}">${
+												label === "auto" ? "Auto" : escapeHtml(label)
+											}</button>`
+									)
+							: []),
 					];
-					
+
 					root.innerHTML = buttons.join("");
 					root.dataset.visible = "true";
-				}
-
-				function applyQualityToCurrentVideo({ preserveTime = true } = {}) {
-					const reel = reels[currentIndex];
-					if (!reel || !elements.video) return;
-					const url = getPlaybackUrl(reel);
-					if (!url) return;
-
-					const current = elements.video.currentSrc || elements.video.src || "";
-					// Avoid reloading the same stream
-					if (current === url || current.endsWith(url) || url.endsWith(current.replace(location.origin, ""))) {
-						return;
-					}
-
-					const pos = preserveTime ? elements.video.currentTime || 0 : 0;
-					const wasPaused = elements.video.paused;
-					elements.video.src = url;
-					if (reel.thumbnailUrl) elements.video.setAttribute("poster", reel.thumbnailUrl);
-					elements.video.load();
-					const resume = () => {
-						if (pos > 0.25) {
-							try {
-								elements.video.currentTime = pos;
-							} catch {}
-						}
-						if (!wasPaused) {
-							elements.video.play().catch(() => {});
-						}
-						elements.video.removeEventListener("loadedmetadata", resume);
-					};
-					elements.video.addEventListener("loadedmetadata", resume);
 				}
 
 				function switchQuality(label) {
 					if (!label) return;
 					selectedQuality = label;
 					localStorage.setItem("reelQuality", label);
-					applyQualityToCurrentVideo({ preserveTime: true });
-					showToast(`Quality: ${label === "original" ? "Original" : label}`);
+
+					const reel = reels[currentIndex];
+					if (!reel) return;
+
+					if (label === "original") {
+						// Re-attach without hls.js — plain whole-file playback.
+						attachPlayback(reel);
+					} else if (currentHls) {
+						applySelectedLevel();
+					} else {
+						// Switching away from "original" or into HLS for the first
+						// time this reel — re-attach so hls.js spins up.
+						attachPlayback(reel);
+					}
+
+					showToast(`Quality: ${label === "auto" ? "Auto" : label === "original" ? "Original" : label}`);
 				}
 
-				// Handle toggling and switching
 				elements.qualitySelector?.addEventListener("click", (event) => {
 					event.stopPropagation();
 					const toggleBtn = event.target.closest?.("#toggleQuality");
@@ -2332,11 +2419,7 @@
 				elements.videoFile.addEventListener("change", () => {
 					const file = elements.videoFile.files?.[0];
 					if (!file) return;
-					if (isFileAlreadyUploaded(file)) {
-						setUploadStatus("error", "This file was already uploaded from this device. Choose another video.");
-						elements.videoFile.value = "";
-						showToast("Same file already uploaded");
-					} else if (!isUploading) {
+					if (!isUploading) {
 						setUploadStatus("", "");
 					}
 				});
@@ -2353,6 +2436,59 @@
 							wakeLock.release();
 						} catch {}
 						wakeLock = null;
+					}
+				}
+
+				/** Handles the common case (clip fits in one request): a single
+				 *  multipart POST straight to /api/videos, no KV round trips at
+				 *  all. Returns true if it handled the upload (success or a
+				 *  terminal failure already reported to the user), false if the
+				 *  caller should fall back to the chunked path. */
+				async function tryDirectUpload(file, fingerprint) {
+					setUploadStatus("info", `Uploading ${(file.size / 1048576).toFixed(1)}MB…`);
+					elements.progressTrack.dataset.visible = "true";
+					elements.progressFill.style.width = "40%";
+
+					const formData = new FormData();
+					formData.append("video", file);
+					formData.append("title", elements.titleInput.value);
+					formData.append("description", elements.descriptionInput.value);
+					formData.append("uploader", elements.uploaderInput.value);
+					formData.append("category", elements.categoryInput.value);
+					formData.append("hashtags", elements.hashtagsInput.value);
+
+					try {
+						const resp = await fetch(`${API}/api/videos`, { method: "POST", body: formData });
+						const compData = await readJson(resp);
+						elements.progressFill.style.width = "100%";
+						elements.progressTrack.dataset.visible = "false";
+
+						const uploaded = compData.data;
+						if (uploaded?.id && uploaded?.ownerToken) {
+							saveOwnerToken(uploaded.id, uploaded.ownerToken);
+						}
+						markFileUploaded(fingerprint);
+						if (elements.uploaderInput.value.trim()) {
+							localStorage.setItem(COMMENT_AUTHOR_KEY, elements.uploaderInput.value.trim());
+						}
+						setUploadStatus("success", "Uploaded! Processing in the background…");
+						elements.uploadForm.reset();
+						elements.uploaderInput.value = "demo-user";
+						elements.categoryInput.value = "entertainment";
+						showToast("Reel uploaded");
+						setTimeout(async () => {
+							setUploadFormBusy(false);
+							closeUploadSheet();
+							await loadFeed();
+						}, 1200);
+						return true;
+					} catch (error) {
+						elements.progressTrack.dataset.visible = "false";
+						setUploadStatus("error", `Error: ${error instanceof Error ? error.message : "unknown"}`);
+						setUploadFormBusy(false);
+						return true; // terminal failure, already reported — don't fall through to chunking
+					} finally {
+						releaseWakeLock();
 					}
 				}
 
@@ -2380,9 +2516,14 @@
 					setUploadFormBusy(true);
 					await requestWakeLock();
 
+					if (file.size <= DIRECT_UPLOAD_MAX_BYTES) {
+						await tryDirectUpload(file, fingerprint);
+						return;
+					}
+
 					const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 					const sizeMB = (file.size / 1048576).toFixed(1);
-					setUploadStatus("info", `Starting upload (${totalChunks} chunk${totalChunks === 1 ? "" : "s"}, 512KB each)…`);
+					setUploadStatus("info", `Starting upload (${totalChunks} chunk${totalChunks === 1 ? "" : "s"}, ${Math.round(CHUNK_SIZE / 1048576)}MB each)…`);
 					elements.progressTrack.dataset.visible = "true";
 					elements.progressFill.style.width = "0%";
 

@@ -4,6 +4,8 @@ import crypto from "crypto";
 import { VideoUploadService } from "../services/VideoUploadService";
 import { BadRequestError } from "../utils/errors";
 
+const REASSEMBLY_CONCURRENCY = 8;
+
 export class ChunkedUploadController {
   constructor(
     private readonly uploadService: VideoUploadService,
@@ -62,8 +64,8 @@ export class ChunkedUploadController {
       const chunk = this.parseChunkBody(req.body);
       if (chunk.length === 0) throw new BadRequestError("Empty chunk body");
       // Cloudflare KV value limit is 25 MiB; keep chunks well under that.
-      if (chunk.length > 5 * 1024 * 1024) {
-        throw new BadRequestError("Chunk too large (max 5MB)");
+      if (chunk.length > 12 * 1024 * 1024) {
+        throw new BadRequestError("Chunk too large (max 12MB)");
       }
 
       await this.kv.put(`upload:${uploadId}:chunk:${chunkIndex}`, chunk, { expirationTtl: 86400 });
@@ -93,6 +95,19 @@ export class ChunkedUploadController {
     throw new BadRequestError("No chunk data in body");
   }
 
+  /** Fetches one chunk from KV with backoff retries — chunks can briefly
+   *  lag behind the client's upload confirmation due to KV's eventual
+   *  consistency, so a few short retries avoid failing a whole upload
+   *  over a transient miss. */
+  private async fetchChunkWithRetry(uploadId: string, index: number): Promise<Buffer> {
+    for (let retry = 0; retry < 5; retry++) {
+      const chunkData = await this.kv!.get(`upload:${uploadId}:chunk:${index}`, { type: "arrayBuffer" });
+      if (chunkData) return Buffer.from(chunkData);
+      await new Promise((r) => setTimeout(r, 300 * (retry + 1)));
+    }
+    throw new BadRequestError(`Chunk ${index} not found after retries`);
+  }
+
   completeUpload = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const { uploadId } = req.body;
@@ -105,21 +120,21 @@ export class ChunkedUploadController {
 
       const { title, description, uploader, category, hashtags, mimeType, totalChunks, fileName } = meta;
 
-      const chunks: Buffer[] = [];
-      for (let i = 0; i < totalChunks; i++) {
-        let found = false;
-        for (let retry = 0; retry < 5; retry++) {
-          const chunkData = await this.kv.get(`upload:${uploadId}:chunk:${i}`, { type: "arrayBuffer" });
-          if (chunkData) {
-            chunks.push(Buffer.from(chunkData));
-            found = true;
-            break;
-          }
-          await new Promise(r => setTimeout(r, 1000));
-        }
-        if (!found) {
-          throw new BadRequestError(`Chunk ${i}/${totalChunks} not found after retries`);
-        }
+      // Fetch chunks in bounded-concurrency batches instead of one at a
+      // time — this was previously a serial `for` loop awaiting each KV
+      // get in turn, which meant total reassembly time scaled linearly
+      // with chunk count regardless of how fast KV itself responded.
+      const chunks: Buffer[] = new Array(totalChunks);
+      for (let start = 0; start < totalChunks; start += REASSEMBLY_CONCURRENCY) {
+        const end = Math.min(start + REASSEMBLY_CONCURRENCY, totalChunks);
+        await Promise.all(
+          Array.from({ length: end - start }, (_, j) => {
+            const i = start + j;
+            return this.fetchChunkWithRetry(uploadId, i).then((data) => {
+              chunks[i] = data;
+            });
+          })
+        );
       }
 
       const delPromises = [this.kv.delete(`upload:${uploadId}:meta`)];

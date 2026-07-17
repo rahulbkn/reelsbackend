@@ -82,13 +82,13 @@ export class VideoFeedService {
       await this.cache.set(cacheKey, urls, URL_CACHE_TTL_SECONDS);
     }
 
-    let qualityUrls: Record<string, string> | undefined;
-    if (record.qualities) {
-      qualityUrls = {};
-      for (const [label, key] of Object.entries(record.qualities)) {
-        qualityUrls[label] = await this.storage.getDownloadUrl(key, { variant: "video" });
-      }
-    }
+    // Quality URLs are no longer resolved to direct storage URLs here —
+    // playback for HLS renditions goes through /hls/master, which itself
+    // resolves each variant's storageKey to a /stream URL at request
+    // time. We keep `qualities` as label->storageKey purely as an
+    // existence signal (see hasHls below); it is NOT meant to be played
+    // directly since it points at raw .ts bytes for HLS renditions.
+    const hasHls = Boolean(record.hlsPlaylists && Object.keys(record.hlsPlaylists).length > 0);
 
     return {
       id: record.id,
@@ -108,7 +108,8 @@ export class VideoFeedService {
       shares: record.shares,
       videoUrl: urls.videoUrl,
       thumbnailUrl: urls.thumbnailUrl,
-      qualities: qualityUrls
+      qualityMeta: hasHls ? record.qualityMeta : undefined,
+      hasHls
     };
   }
 }

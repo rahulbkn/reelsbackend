@@ -13,9 +13,12 @@ export function createApp(env: ConfigEnv & { DB?: D1Database; KV?: KVNamespace }
   const app = express();
 
   // Binary chunks (preferred) — keeps CPU low on Workers (no base64 decode).
-  app.use(express.raw({ type: ["application/octet-stream", "application/offset+octet-stream"], limit: "6mb" }));
+  // Limit raised from 6mb to 12mb to accommodate the larger (8MB) chunk
+  // size used by the client uploader — fewer, bigger chunks means fewer
+  // KV round trips per upload, which is the dominant source of latency.
+  app.use(express.raw({ type: ["application/octet-stream", "application/offset+octet-stream"], limit: "12mb" }));
   // Legacy base64 text chunks
-  app.use(express.text({ type: "text/plain", limit: "6mb" }));
+  app.use(express.text({ type: "text/plain", limit: "12mb" }));
   app.use(express.json({ limit: "2mb" }));
   app.use(express.static("public"));
 
